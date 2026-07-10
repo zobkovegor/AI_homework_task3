@@ -12,6 +12,7 @@ import argparse
 import datetime as dt
 import json
 import os
+import random
 from pathlib import Path
 
 
@@ -32,9 +33,15 @@ For each lesson:
 - Ask the learner to solve one new practice problem.
 - Do not accept "I watched it", "I understand", or "I practiced" as proof.
 - Ask for exact steps and a short explanation of what was confusing.
+- Ask what went wrong or felt hard: real practice produces friction, so a smooth "everything was fine" is a weak signal.
 - If the learner makes a mistake, explain it and ask for a corrected attempt.
 - If the learner bluffs, politely call it out and require real work.
 - Before moving on, give a small transfer check.
+
+Memory of past weaknesses:
+- You may receive a short list of the learner's earlier mistakes ("weakness log").
+- When it is present, occasionally revisit one earlier weakness by giving a new problem that tests the same skill.
+- Do not just repeat the old question; check whether the learner has actually fixed the weak spot.
 
 Course lessons:
 1. Limits
@@ -178,6 +185,21 @@ def save_turn(jsonl_path: Path, md_path: Path, turn: int, speaker: str, model: s
     print(f"[{turn}] {speaker}: {preview}")
 
 
+def extract_weakness(lesson_number: int, mentor_text: str) -> str | None:
+    lowered = mentor_text.lower()
+    signals = [
+        "mistake", "wrong", "incorrect", "not correct", "try again",
+        "you forgot", "you stopped", "that is not evidence", "sign is wrong",
+        "correct the", "not enough", "check the",
+    ]
+    if any(signal in lowered for signal in signals):
+        snippet = mentor_text.strip().replace("\n", " ")
+        if len(snippet) > 160:
+            snippet = snippet[:160] + "..."
+        return f"Lesson {lesson_number}: {snippet}"
+    return None
+
+
 def student_instruction(mentor_text: str) -> str:
     return (
         "Instructor message:\n"
@@ -187,11 +209,35 @@ def student_instruction(mentor_text: str) -> str:
     )
 
 
-def mentor_instruction(lesson_number: int, lesson: str, student_text: str | None = None) -> str:
+def format_weakness_log(weaknesses: list[str]) -> str:
+    if not weaknesses:
+        return ""
+    recent = weaknesses[-5:]
+    lines = "\n".join(f"- {item}" for item in recent)
+    return f"\nWeakness log (earlier mistakes by this learner):\n{lines}\n"
+
+
+def mentor_instruction(
+    lesson_number: int,
+    lesson: str,
+    student_text: str | None = None,
+    weaknesses: list[str] | None = None,
+    revisit: bool = False,
+) -> str:
+    weakness_block = format_weakness_log(weaknesses or [])
+
     if student_text is None:
+        revisit_line = ""
+        if revisit and weakness_block:
+            revisit_line = (
+                "This lesson, also revisit ONE earlier weakness from the log: "
+                "give a small extra problem that tests that same skill in a new form.\n"
+            )
         return (
             f"Lesson {lesson_number}/10.\n"
             f"{lesson}\n"
+            f"{weakness_block}"
+            f"{revisit_line}"
             "Use this structure: video link, short summary, one practice task. "
             "Do not solve the learner's task for them."
         )
@@ -199,6 +245,7 @@ def mentor_instruction(lesson_number: int, lesson: str, student_text: str | None
     return (
         "Learner reply:\n"
         f"{student_text}\n\n"
+        f"{weakness_block}"
         "Reply only as the instructor. Check the actual work. If it is vague or wrong, ask for a correction. "
         "If it is good enough, give one transfer check or pass the lesson."
     )
@@ -224,32 +271,47 @@ def run_course(run_id: str, max_turns: int) -> None:
     print(f"Loading student: {student_model}")
     student = Agent(student_model, STUDENT_PROMPT, max_context_tokens)
 
+    weakness_log: list[str] = []
+
+    bluff_lesson = random.randint(1, len(LESSONS))
+    print(f"(Bluff will be injected on lesson {bluff_lesson})")
+
     turn = 0
     for index, lesson in enumerate(LESSONS, start=1):
         if turn >= max_turns:
             break
 
+        revisit = (index % 3 == 0) and bool(weakness_log)
+
         mentor_text, meta = mentor.reply(
-            [{"role": "user", "content": mentor_instruction(index, lesson)}],
+            [{"role": "user", "content": mentor_instruction(
+                index, lesson, weaknesses=weakness_log, revisit=revisit)}],
             max_new_tokens,
             temperature,
         )
         turn += 1
         save_turn(jsonl_path, md_path, turn, "Mentor", mentor_model, mentor_text, meta)
 
-        student_text, meta = student.reply(
-            [{"role": "user", "content": student_instruction(mentor_text)}],
-            max_new_tokens,
-            temperature,
-        )
+        if index == bluff_lesson:
+            student_text = "I practiced this after the video. It was fine. I just used the rule."
+            meta = {"model": student_model, "injected_bluff": True}
+            print(f"[{turn + 1}] Student: (INJECTED BLUFF)")
+        else:
+            student_text, meta = student.reply(
+                [{"role": "user", "content": student_instruction(mentor_text)}],
+                max_new_tokens,
+                temperature,
+            )
         turn += 1
         save_turn(jsonl_path, md_path, turn, "Student", student_model, student_text, meta)
 
         mentor_text, meta = mentor.reply(
             [
-                {"role": "user", "content": mentor_instruction(index, lesson)},
+                {"role": "user", "content": mentor_instruction(
+                    index, lesson, weaknesses=weakness_log, revisit=revisit)},
                 {"role": "assistant", "content": mentor_text},
-                {"role": "user", "content": mentor_instruction(index, lesson, student_text)},
+                {"role": "user", "content": mentor_instruction(
+                    index, lesson, student_text, weaknesses=weakness_log)},
             ],
             max_new_tokens,
             temperature,
@@ -257,8 +319,17 @@ def run_course(run_id: str, max_turns: int) -> None:
         turn += 1
         save_turn(jsonl_path, md_path, turn, "Mentor", mentor_model, mentor_text, meta)
 
+        note = extract_weakness(index, mentor_text)
+        if note:
+            weakness_log.append(note)
+            with md_path.open("a", encoding="utf-8") as handle:
+                handle.write(f"\n> _[memory] recorded weakness: {note}_\n")
+
     print(f"\nSaved {jsonl_path}")
     print(f"Saved {md_path}")
+    print(f"Final weakness log ({len(weakness_log)} items):")
+    for item in weakness_log:
+        print(f"  - {item}")
 
 
 def main() -> None:
