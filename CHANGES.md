@@ -62,11 +62,11 @@ wrong. Now the answer is also checked programmatically.
 
 `sympy` added to `requirements.txt`.
 
-## 3. Fixes from the instructor's feedback (Timur)
+## 3. Usability refinements
 
-Two notes: (a) how would a student even type all these formulas, and (b) the
-mentor should start simple, otherwise a beginner is lost instantly, and nobody
-is that patient talking to a bot.
+Two points guided this section: (a) typing formulas in a chat is awkward for a
+learner, and (b) the mentor should start simple, since a beginner is otherwise
+lost immediately.
 
 **Lower friction for formula entry:**
 
