@@ -477,7 +477,7 @@ def weakness_note(index: int, mentor_text: str) -> str:
 
 # --- main course loop -------------------------------------------------------
 
-def run_course(run_id: str, max_turns: int) -> None:
+def run_course(run_id: str, max_turns: int, only: int | None = None) -> None:
     load_env()
 
     mentor_model = os.environ.get("MENTOR_MODEL", MENTOR_MODEL)
@@ -503,8 +503,12 @@ def run_course(run_id: str, max_turns: int) -> None:
     student = Agent(student_model, STUDENT_PROMPT, max_context_tokens)
 
     weakness_log: list[str] = []
-    bluff_lesson = random.randint(1, len(LESSONS))
-    print(f"(Bluff will be injected on lesson {bluff_lesson})")
+    # No bluff injection when running a single lesson in isolation.
+    bluff_lesson = 0 if only is not None else random.randint(1, len(LESSONS))
+    if only is not None:
+        print(f"(Running only lesson {only}; bluff injection disabled)")
+    else:
+        print(f"(Bluff will be injected on lesson {bluff_lesson})")
 
     if _sympy_ctx():
         print("Automatic sympy answer-check: ENABLED")
@@ -513,6 +517,8 @@ def run_course(run_id: str, max_turns: int) -> None:
 
     turn = 0
     for index, (title, link, bridge, warmup, task, expected) in enumerate(LESSONS, start=1):
+        if only is not None and index != only:
+            continue
         if turn >= max_turns:
             break
 
@@ -613,8 +619,10 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--run-id", default=dt.datetime.now(dt.UTC).strftime("%Y%m%dT%H%M%SZ"))
     parser.add_argument("--max-turns", type=int, default=80)
+    parser.add_argument("--only", type=int, default=None,
+                        help="Run only this lesson number (1-10); disables bluff injection.")
     args = parser.parse_args()
-    run_course(args.run_id, args.max_turns)
+    run_course(args.run_id, args.max_turns, args.only)
 
 
 if __name__ == "__main__":
